@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font-family: "Segoe UI", Arial, sans-serif; margin: 24px; }
+      h1 { color: #1d3557; }
+      table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+      th { background-color: #f1faee; }
+      footer { margin-top: 24px; font-size: 0.8rem; color: #555; }
+    </style>
+  </head>
+  <body>
+    <h1>Weather report</h1>
+    <p><strong>Location:</strong> {{ payload.request.location.name }}<br />
+       <strong>Timeframe:</strong> {{ payload.request.timeframe.start }} → {{ payload.request.timeframe.end }}<br />
+       <strong>Units:</strong> {{ payload.request.units }}</p>
+
+    <h2>{{ payload.narrative.title }}</h2>
+    <p>{{ payload.narrative.summary }}</p>
+
+    <h3>Daily metrics</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Max temp</th>
+          <th>Min temp</th>
+          <th>Precip. probability</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in payload.dataset.data %}
+        <tr>
+          <td>{{ row.date }}</td>
+          <td>{{ row.temperature_max or "-" }}</td>
+          <td>{{ row.temperature_min or "-" }}</td>
+          <td>{{ row.precipitation_probability or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <footer>
+      Generated on {{ now() }} using data from {{ payload.dataset.source }}.
+    </footer>
+  </body>
+</html>
