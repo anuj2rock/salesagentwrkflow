@@ -1,0 +1,7 @@
+Weather report summary
+Location: {{ payload.request.location.name }} ({{ payload.request.location.latitude }}, {{ payload.request.location.longitude }})
+Timeframe: {{ payload.request.timeframe.start }} → {{ payload.request.timeframe.end }} ({{ payload.request.timeframe.days }} days)
+Units: {{ payload.request.units|title }}
+Metrics: {{ payload.request.metrics | join(", ") }}
+Dataset source: {{ payload.dataset.source }}
+Generated: {{ generated_at }}

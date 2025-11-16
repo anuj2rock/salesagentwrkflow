@@ -65,7 +65,19 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
         extra={"request_id": request.request_id, "narrative_preview": narrative.summary[:80]},
     )
     payload = WeatherReportPayload(request=spec, dataset=dataset, narrative=narrative)
-    pdf_bytes = render_pdf(payload)
+    try:
+        pdf_bytes = render_pdf(payload)
+    except Exception as exc:  # pragma: no cover - PDF generation safety net
+        logger.exception(
+            "pdf generation failed",
+            extra={
+                "request_id": request.request_id,
+                "location": spec.location.name,
+                "timeframe": f"{spec.timeframe.start}->{spec.timeframe.end}",
+            },
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate PDF") from exc
+
     logger.info(
         "pdf generated",
         extra={"request_id": request.request_id, "pdf_size_bytes": len(pdf_bytes)},
