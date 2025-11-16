@@ -1,12 +1,16 @@
-"""Simple rule-based interpreter that approximates LLM behavior for the POC."""
+
+"""Prompt interpretation strategies for the weather agent."""
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, timedelta
 from typing import List
 
-from .weather_api import GeocodingService
+from ..config import get_settings
 from ..schemas import Location, Timeframe, WeatherSpec
+from .llm_client import LLMClient, extract_message_content, parse_json_from_content
+from .weather_api import GeocodingService
 
 
 DEFAULT_METRICS = [
@@ -16,8 +20,8 @@ DEFAULT_METRICS = [
 ]
 
 
-class PromptInterpreter:
-    """Translate a free-form prompt into a structured ``WeatherSpec``."""
+class RuleBasedPromptInterpreter:
+    """Translate a free-form prompt into a structured ``WeatherSpec`` without an LLM."""
 
     def __init__(self, geocoder: GeocodingService | None = None) -> None:
         self._geocoder = geocoder or GeocodingService()
@@ -28,7 +32,7 @@ class PromptInterpreter:
 
         timeframe = self._extract_timeframe(prompt)
         metrics = self._extract_metrics(prompt)
-        units = "imperial" if re.search(r"\b(fahrenheit|imperial|fahrenheit)\b", prompt, re.I) else "metric"
+        units = "imperial" if re.search(r"\b(fahrenheit|imperial)\b", prompt, re.I) else "metric"
         tone = "casual" if "casual" in prompt.lower() else "business"
 
         return WeatherSpec(
@@ -72,4 +76,77 @@ class PromptInterpreter:
         if not metrics:
             metrics.extend(DEFAULT_METRICS)
         return sorted(set(metrics))
+
+
+class LLMInterpreter:
+    """Use a Hugging Face-hosted LLM to interpret prompts."""
+
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        geocoder: GeocodingService | None = None,
+        fallback: RuleBasedPromptInterpreter | None = None,
+    ) -> None:
+        settings = get_settings()
+        self._model = settings.llm_model_interpreter
+        self._llm_client = llm_client or LLMClient(settings=settings)
+        self._geocoder = geocoder or GeocodingService()
+        self._fallback = fallback or RuleBasedPromptInterpreter(self._geocoder)
+
+    async def interpret(self, prompt: str) -> WeatherSpec:
+        if not self._llm_client.is_configured:
+            return await self._fallback.interpret(prompt)
+
+        try:
+            spec_dict = await self._call_model(prompt)
+            location_block = spec_dict.setdefault("location", {})
+            if not location_block.get("name"):
+                raise ValueError("Location name missing")
+            if not location_block.get("latitude") or not location_block.get("longitude"):
+                coordinates = await self._geocoder.geocode(location_block["name"])
+                location_block["latitude"] = coordinates.latitude
+                location_block["longitude"] = coordinates.longitude
+            spec = WeatherSpec.model_validate(spec_dict)
+        except Exception:  # pragma: no cover - depends on external API
+            # Fall back to deterministic heuristics if the LLM output is invalid
+            return await self._fallback.interpret(prompt)
+        return spec
+
+    async def _call_model(self, prompt: str) -> dict:
+        schema = {
+            "location": {
+                "name": "string",
+                "latitude": "float",
+                "longitude": "float",
+            },
+            "timeframe": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
+            "metrics": ["temperature_max", "temperature_min", "precipitation_probability"],
+            "units": "metric|imperial",
+            "narrative_tone": "business|casual",
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You convert user weather requests into a JSON object following this schema: "
+                    f"{json.dumps(schema)}. Respond with JSON only."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        response = await self._llm_client.chat(messages=messages, model=self._model)
+        content = extract_message_content(response)
+        return parse_json_from_content(content)
+
+
+def build_prompt_interpreter() -> LLMInterpreter | RuleBasedPromptInterpreter:
+    """Factory that decides whether to use the LLM or the heuristic interpreter."""
+
+    settings = get_settings()
+    llm_client = LLMClient(settings=settings)
+    geocoder = GeocodingService()
+    fallback = RuleBasedPromptInterpreter(geocoder)
+    if llm_client.is_configured:
+        return LLMInterpreter(llm_client=llm_client, geocoder=geocoder, fallback=fallback)
+    return fallback
 

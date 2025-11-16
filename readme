@@ -20,4 +20,20 @@ curl -X POST http://localhost:8000/api/weather-report \
   --output weather.pdf
 ```
 
-The API returns a PDF compiled from live Open-Meteo data. The prompt interpreter is intentionally simple for the POC but can be replaced with an LLM-backed agent.
+The API returns a PDF compiled from live Open-Meteo data.
+
+## Enabling the free Hugging Face LLM
+
+The backend can call Hugging Face's router to interpret prompts and author narratives.
+
+1. Create a [Hugging Face access token](https://huggingface.co/settings/tokens) with `inference` scope.
+2. Export the token and optional overrides before running the API:
+
+   ```bash
+   export HF_TOKEN="hf_..."
+   export LLM_PROVIDER=huggingface
+   export LLM_MODEL_INTERPRETER="CohereLabs/aya-expanse-32b:cohere"
+   export LLM_MODEL_NARRATIVE="CohereLabs/aya-expanse-32b:cohere"
+   ```
+
+3. Start Uvicorn as shown above. When no token is provided the service gracefully falls back to the rule-based interpreter and summary generator.
