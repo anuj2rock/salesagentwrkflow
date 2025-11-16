@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from typing import List
 
 from ..config import get_settings
-from ..schemas import Location, Timeframe, WeatherSpec
+from ..schemas import Location, ReportSpec, Timeframe
 from .llm_client import LLMClient, extract_message_content, parse_json_from_content
 from .weather_api import GeocodingService
 
@@ -52,7 +52,7 @@ class RuleBasedPromptInterpreter:
     def __init__(self, geocoder: GeocodingService | None = None) -> None:
         self._geocoder = geocoder or GeocodingService()
 
-    async def interpret(self, prompt: str) -> WeatherSpec:
+    async def interpret(self, prompt: str) -> ReportSpec:
         location_name = self._extract_location(prompt) or "New York City, USA"
         logger.debug("rule-based interpreter extracting location", extra={"location_hint": location_name})
         coordinates = await self._geocoder.geocode(location_name)
@@ -62,7 +62,7 @@ class RuleBasedPromptInterpreter:
         units = "imperial" if re.search(r"\b(fahrenheit|imperial)\b", prompt, re.I) else "metric"
         tone = "casual" if "casual" in prompt.lower() else "business"
 
-        return WeatherSpec(
+        return ReportSpec(
             location=Location(name=coordinates.name, latitude=coordinates.latitude, longitude=coordinates.longitude),
             timeframe=timeframe,
             metrics=metrics,
@@ -139,7 +139,7 @@ class LLMInterpreter:
         self._geocoder = geocoder or GeocodingService()
         self._fallback = fallback or RuleBasedPromptInterpreter(self._geocoder)
 
-    async def interpret(self, prompt: str) -> WeatherSpec:
+    async def interpret(self, prompt: str) -> ReportSpec:
         if not self._llm_client.is_configured:
             logger.info("LLM interpreter not configured; using fallback")
             return await self._fallback.interpret(prompt)
@@ -153,7 +153,7 @@ class LLMInterpreter:
                 coordinates = await self._geocoder.geocode(location_block["name"])
                 location_block["latitude"] = coordinates.latitude
                 location_block["longitude"] = coordinates.longitude
-            spec = WeatherSpec.model_validate(spec_dict)
+            spec = ReportSpec.model_validate(spec_dict)
         except Exception:  # pragma: no cover - depends on external API
             logger.warning("LLM interpreter failed; falling back", exc_info=True)
             # Fall back to deterministic heuristics if the LLM output is invalid

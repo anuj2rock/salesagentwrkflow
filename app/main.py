@@ -4,16 +4,14 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import Response
 
 from .schemas import ProviderSpec, WeatherPromptRequest, WeatherReportPayload
 from .services.interpreter import build_prompt_interpreter
 from .services.narrative import NarrativeService
 from .services.pdf import render_pdf
-from .services.provider_registry import provider_registry
-from .services.weather_api import WeatherAPIClient
+from .services.providers import ProviderClientFactory, ProviderRequestError
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +29,23 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.post("/api/weather-report", response_class=Response)
-async def weather_report(request: WeatherPromptRequest) -> Response:
+async def weather_report(request: WeatherPromptRequest, provider_id: str | None = Query(default=None)) -> Response:
     request_id = uuid.uuid4().hex
     logger.info("weather_report request received", extra={"request_id": request_id})
     interpreter = build_prompt_interpreter()
     spec = await interpreter.interpret(request.prompt)
+    provider_choice = provider_id or request.provider_id or spec.provider_id or "open-meteo"
+    spec = spec.model_copy(
+        update={
+            "provider_id": provider_choice,
+            "reference_id": spec.reference_id or request_id,
+        }
+    )
     logger.info(
         "prompt interpreted",
         extra={
             "request_id": request_id,
+            "provider_id": spec.provider_id,
             "location": spec.location.name,
             "timeframe": f"{spec.timeframe.start}->{spec.timeframe.end}",
             "metrics": spec.metrics,
@@ -47,28 +53,36 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
         },
     )
 
-    weather_client = WeatherAPIClient()
+    factory = ProviderClientFactory()
     try:
-        dataset = await weather_client.fetch_daily_metrics(
-            location=spec.location,
-            timeframe_start=spec.timeframe.start,
-            timeframe_end=spec.timeframe.end,
-            metrics=spec.metrics,
-            units=spec.units,
-        )
+        provider_client = factory.get_client(spec.provider_id or "open-meteo")
+        dataset = await provider_client.fetch(spec)
         logger.info(
             "weather dataset fetched",
             extra={
                 "request_id": request_id,
+                "provider_id": spec.provider_id,
                 "location": spec.location.name,
                 "days": len(dataset.data),
                 "source": dataset.source,
             },
         )
+    except HTTPException:
+        raise
+    except ProviderRequestError as exc:
+        logger.warning(
+            "provider rejected request",
+            extra={"request_id": request_id, "provider_id": spec.provider_id},
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - network error handling
         logger.exception(
             "weather data fetch failed",
-            extra={"request_id": request_id, "location": spec.location.name},
+            extra={
+                "request_id": request_id,
+                "provider_id": spec.provider_id,
+                "location": spec.location.name,
+            },
         )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
