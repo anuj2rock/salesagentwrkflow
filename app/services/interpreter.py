@@ -1,8 +1,8 @@
-
 """Prompt interpretation strategies for the weather agent."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date, timedelta
 from typing import List
@@ -11,6 +11,9 @@ from ..config import get_settings
 from ..schemas import Location, Timeframe, WeatherSpec
 from .llm_client import LLMClient, extract_message_content, parse_json_from_content
 from .weather_api import GeocodingService
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_METRICS = [
@@ -28,6 +31,7 @@ class RuleBasedPromptInterpreter:
 
     async def interpret(self, prompt: str) -> WeatherSpec:
         location_name = self._extract_location(prompt) or "New York City, USA"
+        logger.debug("rule-based interpreter extracting location", extra={"location_hint": location_name})
         coordinates = await self._geocoder.geocode(location_name)
 
         timeframe = self._extract_timeframe(prompt)
@@ -95,6 +99,7 @@ class LLMInterpreter:
 
     async def interpret(self, prompt: str) -> WeatherSpec:
         if not self._llm_client.is_configured:
+            logger.info("LLM interpreter not configured; using fallback")
             return await self._fallback.interpret(prompt)
 
         try:
@@ -108,6 +113,7 @@ class LLMInterpreter:
                 location_block["longitude"] = coordinates.longitude
             spec = WeatherSpec.model_validate(spec_dict)
         except Exception:  # pragma: no cover - depends on external API
+            logger.warning("LLM interpreter failed; falling back", exc_info=True)
             # Fall back to deterministic heuristics if the LLM output is invalid
             return await self._fallback.interpret(prompt)
         return spec
@@ -134,8 +140,10 @@ class LLMInterpreter:
             },
             {"role": "user", "content": prompt},
         ]
+        logger.info("calling LLM for prompt interpretation", extra={"model": self._model})
         response = await self._llm_client.chat(messages=messages, model=self._model)
         content = extract_message_content(response)
+        logger.debug("LLM interpreter raw content received", extra={"length": len(content)})
         return parse_json_from_content(content)
 
 

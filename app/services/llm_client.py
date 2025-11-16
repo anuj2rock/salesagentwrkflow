@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, List
 
 import httpx
 
 from ..config import Settings, get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -49,6 +53,10 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(self._settings.llm_max_retries):
             try:
+                logger.info(
+                    "calling Hugging Face router",
+                    extra={"model": model, "attempt": attempt + 1},
+                )
                 async with httpx.AsyncClient(timeout=self._settings.llm_timeout_seconds) as client:
                     response = await client.post(
                         "https://router.huggingface.co/v1/chat/completions",
@@ -59,9 +67,23 @@ class LLMClient:
                 data = response.json()
                 if not data.get("choices"):
                     raise ValueError("LLM response missing choices")
+                logger.info(
+                    "LLM call succeeded",
+                    extra={
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "prompt_tokens": data.get("usage", {}).get("prompt_tokens"),
+                        "completion_tokens": data.get("usage", {}).get("completion_tokens"),
+                    },
+                )
                 return data
             except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover - network dependent
                 last_error = exc
+                logger.warning(
+                    "LLM call failed",
+                    extra={"model": model, "attempt": attempt + 1},
+                    exc_info=True,
+                )
                 # Retry on transient errors
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in {
                     408,

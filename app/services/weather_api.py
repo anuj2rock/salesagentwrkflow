@@ -1,6 +1,7 @@
 """HTTP clients for geocoding and weather data."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, List
@@ -11,6 +12,9 @@ from ..schemas import Location, WeatherDataPoint, WeatherDataset
 
 GEOCODER_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,6 +29,7 @@ class GeocodingService:
 
     async def geocode(self, location: str) -> GeocodeResult:
         params = {"name": location, "count": 1}
+        logger.debug("geocoding lookup", extra={"location": location})
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(GEOCODER_URL, params=params)
             response.raise_for_status()
@@ -32,7 +37,9 @@ class GeocodingService:
         first = payload.get("results", [{}])[0]
         if not first:
             raise ValueError(f"Could not geocode location: {location}")
-        return GeocodeResult(name=first.get("name", location), latitude=first["latitude"], longitude=first["longitude"])
+        result = GeocodeResult(name=first.get("name", location), latitude=first["latitude"], longitude=first["longitude"])
+        logger.info("geocoding success", extra={"location": result.name, "lat": result.latitude, "lon": result.longitude})
+        return result
 
 
 class WeatherAPIClient:
@@ -64,10 +71,24 @@ class WeatherAPIClient:
         }
         if units == "imperial":
             params["temperature_unit"] = "fahrenheit"
+        logger.info(
+            "fetching weather data",
+            extra={
+                "location": location.name,
+                "start": timeframe_start.isoformat(),
+                "end": timeframe_end.isoformat(),
+                "metrics": list(metrics),
+            },
+        )
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(WEATHER_URL, params=params)
             response.raise_for_status()
-        return self._parse_dataset(response.json(), metrics)
+        dataset = self._parse_dataset(response.json(), metrics)
+        logger.info(
+            "weather data parsed",
+            extra={"location": location.name, "days": len(dataset.data)},
+        )
+        return dataset
 
     def _parse_dataset(self, payload: dict, metrics: Iterable[str]) -> WeatherDataset:
         daily = payload.get("daily", {})
