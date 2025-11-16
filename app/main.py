@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -19,13 +20,14 @@ app = FastAPI(title="Weather Agent POC", version="0.1.0")
 
 @app.post("/api/weather-report", response_class=Response)
 async def weather_report(request: WeatherPromptRequest) -> Response:
-    logger.info("weather_report request received", extra={"request_id": request.request_id})
+    request_id = uuid.uuid4().hex
+    logger.info("weather_report request received", extra={"request_id": request_id})
     interpreter = build_prompt_interpreter()
     spec = await interpreter.interpret(request.prompt)
     logger.info(
         "prompt interpreted",
         extra={
-            "request_id": request.request_id,
+            "request_id": request_id,
             "location": spec.location.name,
             "timeframe": f"{spec.timeframe.start}->{spec.timeframe.end}",
             "metrics": spec.metrics,
@@ -45,7 +47,7 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
         logger.info(
             "weather dataset fetched",
             extra={
-                "request_id": request.request_id,
+                "request_id": request_id,
                 "location": spec.location.name,
                 "days": len(dataset.data),
                 "source": dataset.source,
@@ -54,7 +56,7 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
     except Exception as exc:  # pragma: no cover - network error handling
         logger.exception(
             "weather data fetch failed",
-            extra={"request_id": request.request_id, "location": spec.location.name},
+            extra={"request_id": request_id, "location": spec.location.name},
         )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -62,7 +64,7 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
     narrative = await narrative_service.generate(dataset, tone=spec.narrative_tone)
     logger.info(
         "narrative generated",
-        extra={"request_id": request.request_id, "narrative_preview": narrative.summary[:80]},
+        extra={"request_id": request_id, "narrative_preview": narrative.summary[:80]},
     )
     payload = WeatherReportPayload(request=spec, dataset=dataset, narrative=narrative)
     try:
@@ -71,7 +73,7 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
         logger.exception(
             "pdf generation failed",
             extra={
-                "request_id": request.request_id,
+                "request_id": request_id,
                 "location": spec.location.name,
                 "timeframe": f"{spec.timeframe.start}->{spec.timeframe.end}",
             },
@@ -80,7 +82,7 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
 
     logger.info(
         "pdf generated",
-        extra={"request_id": request.request_id, "pdf_size_bytes": len(pdf_bytes)},
+        extra={"request_id": request_id, "pdf_size_bytes": len(pdf_bytes)},
     )
 
     return Response(content=pdf_bytes, media_type="application/pdf")
