@@ -1,17 +1,12 @@
-"""HTTP clients for geocoding and weather data."""
+"""HTTP clients for geocoding data."""
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
-from typing import Iterable, List
 
 import httpx
 
-from ..schemas import Location, WeatherDataPoint, WeatherDataset
-
 GEOCODER_URL = "https://geocoding-api.open-meteo.com/v1/search"
-WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 
 logger = logging.getLogger(__name__)
@@ -40,71 +35,3 @@ class GeocodingService:
         result = GeocodeResult(name=first.get("name", location), latitude=first["latitude"], longitude=first["longitude"])
         logger.info("geocoding success", extra={"location": result.name, "lat": result.latitude, "lon": result.longitude})
         return result
-
-
-class WeatherAPIClient:
-    """Client for Open-Meteo forecast API."""
-
-    METRIC_MAP = {
-        "temperature_max": "temperature_2m_max",
-        "temperature_min": "temperature_2m_min",
-        "precipitation_probability": "precipitation_probability_mean",
-    }
-
-    async def fetch_daily_metrics(
-        self,
-        *,
-        location: Location,
-        timeframe_start: date,
-        timeframe_end: date,
-        metrics: Iterable[str],
-        units: str = "metric",
-    ) -> WeatherDataset:
-        daily_params = [self.METRIC_MAP[m] for m in metrics if m in self.METRIC_MAP]
-        params = {
-            "latitude": location.latitude,
-            "longitude": location.longitude,
-            "daily": ",".join(daily_params),
-            "timezone": "auto",
-            "start_date": timeframe_start.isoformat(),
-            "end_date": timeframe_end.isoformat(),
-        }
-        if units == "imperial":
-            params["temperature_unit"] = "fahrenheit"
-        logger.info(
-            "fetching weather data",
-            extra={
-                "location": location.name,
-                "start": timeframe_start.isoformat(),
-                "end": timeframe_end.isoformat(),
-                "metrics": list(metrics),
-            },
-        )
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(WEATHER_URL, params=params)
-            response.raise_for_status()
-        dataset = self._parse_dataset(response.json(), metrics)
-        logger.info(
-            "weather data parsed",
-            extra={"location": location.name, "days": len(dataset.data)},
-        )
-        return dataset
-
-    def _parse_dataset(self, payload: dict, metrics: Iterable[str]) -> WeatherDataset:
-        daily = payload.get("daily", {})
-        dates = [date.fromisoformat(day) for day in daily.get("time", [])]
-        data_points: List[WeatherDataPoint] = []
-        for idx, current_date in enumerate(dates):
-            record = WeatherDataPoint(date=current_date)
-            if "temperature_max" in metrics:
-                temps = daily.get("temperature_2m_max", [])
-                record.temperature_max = temps[idx] if idx < len(temps) else None
-            if "temperature_min" in metrics:
-                temps_min = daily.get("temperature_2m_min", [])
-                record.temperature_min = temps_min[idx] if idx < len(temps_min) else None
-            if "precipitation_probability" in metrics:
-                precip = daily.get("precipitation_probability_mean", [])
-                record.precipitation_probability = precip[idx] if idx < len(precip) else None
-            data_points.append(record)
-        return WeatherDataset(source="open-meteo", data=data_points)
-
