@@ -22,6 +22,29 @@ DEFAULT_METRICS = [
     "precipitation_probability",
 ]
 
+TIMEFRAME_CUES = [
+    "next",
+    "tomorrow",
+    "today",
+    "tonight",
+    "week",
+    "weeks",
+    "weekend",
+    "weekday",
+    "weekdays",
+    "day",
+    "days",
+    "month",
+    "months",
+    "year",
+    "years",
+]
+
+_TIMEFRAME_CUE_PATTERN = re.compile(rf"\b(?:{'|'.join(TIMEFRAME_CUES)})\b", re.IGNORECASE)
+_LOCATION_CANDIDATE_PATTERN = re.compile(r"\bin\s+([A-Za-z0-9\s,.'-]+)", re.IGNORECASE)
+_LEADING_PREPOSITIONS_PATTERN = re.compile(r"^(?:in|at|for|to)\b[\s,]+", re.IGNORECASE)
+_TRAILING_PREPOSITIONS_PATTERN = re.compile(r"[\s,]+(?:in|at|for|to)\b$", re.IGNORECASE)
+
 
 class RuleBasedPromptInterpreter:
     """Translate a free-form prompt into a structured ``WeatherSpec`` without an LLM."""
@@ -48,10 +71,29 @@ class RuleBasedPromptInterpreter:
         )
 
     def _extract_location(self, prompt: str) -> str | None:
-        match = re.search(r"in ([A-Za-z\s,]+)", prompt)
-        if match:
-            return match.group(1).strip()
-        return None
+        match = _LOCATION_CANDIDATE_PATTERN.search(prompt)
+        if not match:
+            return None
+
+        location = match.group(1).strip()
+        if not location:
+            return None
+
+        cue_match = _TIMEFRAME_CUE_PATTERN.search(location)
+        if cue_match:
+            location = location[: cue_match.start()].strip()
+
+        # Remove duplicated leading prepositions like "in in Austin"
+        while True:
+            cleaned = _LEADING_PREPOSITIONS_PATTERN.sub("", location).strip()
+            if cleaned == location:
+                break
+            location = cleaned
+
+        location = _TRAILING_PREPOSITIONS_PATTERN.sub("", location).strip(" ,.;:-")
+        location = location.strip()
+
+        return location or None
 
     def _extract_timeframe(self, prompt: str) -> Timeframe:
         today = date.today()
