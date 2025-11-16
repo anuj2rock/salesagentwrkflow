@@ -4,18 +4,30 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
 
-from .schemas import WeatherPromptRequest, WeatherReportPayload
+from .schemas import ProviderSpec, WeatherPromptRequest, WeatherReportPayload
 from .services.interpreter import build_prompt_interpreter
 from .services.narrative import NarrativeService
 from .services.pdf import render_pdf
+from .services.provider_registry import provider_registry
 from .services.weather_api import WeatherAPIClient
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Weather Agent POC", version="0.1.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    request_id = request.headers.get("x-correlation-id", uuid.uuid4().hex)
+    logger.warning(
+        "request validation failed",
+        extra={"request_id": request_id, "path": str(request.url.path), "errors": exc.errors()},
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors(), "request_id": request_id})
 
 
 @app.post("/api/weather-report", response_class=Response)
@@ -86,4 +98,59 @@ async def weather_report(request: WeatherPromptRequest) -> Response:
     )
 
     return Response(content=pdf_bytes, media_type="application/pdf")
+
+
+@app.post("/api/providers")
+async def upsert_provider(spec: ProviderSpec) -> dict:
+    request_id = uuid.uuid4().hex
+    logger.info(
+        "provider spec upsert requested",
+        extra={"request_id": request_id, "provider_id": spec.provider_id},
+    )
+    try:
+        stored = provider_registry.upsert(spec)
+    except Exception as exc:  # pragma: no cover - defensive persistence logging
+        logger.exception(
+            "provider spec upsert failed",
+            extra={"request_id": request_id, "provider_id": spec.provider_id},
+        )
+        raise HTTPException(status_code=500, detail="Failed to store provider spec") from exc
+
+    logger.info(
+        "provider spec upserted",
+        extra={
+            "request_id": request_id,
+            "provider_id": spec.provider_id,
+            "version": spec.version,
+            "endpoint_count": len(spec.endpoints),
+        },
+    )
+    return stored.sanitized_dict()
+
+
+@app.get("/api/providers/{provider_id}")
+async def get_provider(provider_id: str) -> dict:
+    request_id = uuid.uuid4().hex
+    logger.info(
+        "provider spec lookup",
+        extra={"request_id": request_id, "provider_id": provider_id},
+    )
+    spec = provider_registry.get(provider_id)
+    if not spec:
+        logger.info(
+            "provider spec not found",
+            extra={"request_id": request_id, "provider_id": provider_id},
+        )
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    logger.info(
+        "provider spec retrieved",
+        extra={
+            "request_id": request_id,
+            "provider_id": provider_id,
+            "version": spec.version,
+            "endpoint_count": len(spec.endpoints),
+        },
+    )
+    return spec.sanitized_dict()
 
