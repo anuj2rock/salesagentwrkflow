@@ -1,12 +1,11 @@
-"""Render PDF artifacts from structured data using Jinja2 + ReportLab."""
+"""Render PDF artifacts from structured data using ReportLab only."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from io import BytesIO
-from pathlib import Path
 from typing import List
 
-from jinja2 import Environment, FileSystemLoader
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -14,16 +13,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from ..schemas import WeatherReportPayload
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-
-env = Environment(
-    loader=FileSystemLoader(str(TEMPLATES_DIR)),
-    autoescape=False,
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
-
-_METADATA_TEMPLATE = env.get_template("weather_report.txt.j2")
+logger = logging.getLogger(__name__)
 
 
 def _format_float(value: float | None, suffix: str = "") -> str:
@@ -36,8 +26,22 @@ def _format_float(value: float | None, suffix: str = "") -> str:
 
 
 def _metadata_lines(payload: WeatherReportPayload) -> List[str]:
-    rendered = _METADATA_TEMPLATE.render(payload=payload, generated_at=datetime.utcnow().isoformat())
-    return [line.strip() for line in rendered.splitlines() if line.strip()]
+    request = payload.request
+    location = request.location
+    timeframe = request.timeframe
+    metrics = ", ".join(request.metrics) if request.metrics else "-"
+    generated_at = datetime.utcnow().isoformat()
+
+    lines = [
+        "Weather report summary",
+        f"Location: {location.name} ({location.latitude}, {location.longitude})",
+        f"Timeframe: {timeframe.start} → {timeframe.end} ({timeframe.days} days)",
+        f"Units: {request.units.title()}",
+        f"Metrics: {metrics}",
+        f"Dataset source: {payload.dataset.source}",
+        f"Generated: {generated_at}",
+    ]
+    return lines
 
 
 def _build_table(payload: WeatherReportPayload) -> Table:
@@ -73,6 +77,9 @@ def _build_table(payload: WeatherReportPayload) -> Table:
 
 
 def render_pdf(payload: WeatherReportPayload) -> bytes:
+    location_name = payload.request.location.name
+    logger.info("rendering weather report pdf", extra={"location": location_name})
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -81,7 +88,7 @@ def render_pdf(payload: WeatherReportPayload) -> bytes:
         leftMargin=36,
         topMargin=48,
         bottomMargin=36,
-        title=f"Weather report - {payload.request.location.name}",
+        title=f"Weather report - {location_name}",
         author="Weather Agent POC",
     )
 
@@ -101,7 +108,14 @@ def render_pdf(payload: WeatherReportPayload) -> bytes:
     story.append(Paragraph("Daily metrics", styles["Heading3"]))
     story.append(_build_table(payload))
 
-    doc.build(story)
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
+    try:
+        doc.build(story)
+        pdf_bytes = buffer.getvalue()
+    except Exception:
+        logger.exception("pdf render failed", extra={"location": location_name})
+        raise
+    finally:
+        buffer.close()
+
+    logger.info("pdf render complete", extra={"location": location_name, "bytes": len(pdf_bytes)})
     return pdf_bytes
