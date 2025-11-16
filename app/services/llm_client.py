@@ -120,8 +120,69 @@ def extract_message_content(response: Dict[str, Any]) -> str:
 def parse_json_from_content(content: str) -> Dict[str, Any]:
     """Parse JSON content emitted by the model and raise on errors."""
 
+    def _strip_code_fences(text: str) -> str:
+        trimmed = text.strip()
+        if trimmed.startswith("````"):
+            return trimmed  # malformed fence; fall back to generic parsing
+        if trimmed.startswith("```") and trimmed.endswith("```"):
+            inner = trimmed[3:-3].strip()
+            if "\n" in inner:
+                first_line, rest = inner.split("\n", 1)
+                if "{" not in first_line and "[" not in first_line:
+                    inner = rest
+            trimmed = inner.strip()
+        elif trimmed.startswith("`") and trimmed.endswith("`"):
+            trimmed = trimmed[1:-1].strip()
+        return trimmed
+
+    def _extract_first_json_blob(text: str) -> str:
+        start_idx: int | None = None
+        stack: List[str] = []
+        in_string = False
+        escape = False
+
+        pairs = {"{": "}", "[": "]"}
+
+        for idx, char in enumerate(text):
+            if start_idx is None:
+                if char in pairs:
+                    start_idx = idx
+                    stack.append(pairs[char])
+                continue
+
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char in pairs:
+                stack.append(pairs[char])
+                continue
+
+            if char in ("}", "]"):
+                if not stack:
+                    break
+                expected = stack.pop()
+                if char != expected:
+                    break
+                if not stack and start_idx is not None:
+                    return text[start_idx : idx + 1]
+
+        raise ValueError("Model response was not valid JSON")
+
+    stripped = _strip_code_fences(content)
     try:
-        return json.loads(content)
+        json_blob = _extract_first_json_blob(stripped)
+        return json.loads(json_blob)
     except json.JSONDecodeError as exc:  # pragma: no cover - depends on model output
         raise ValueError("Model response was not valid JSON") from exc
 
