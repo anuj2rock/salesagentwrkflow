@@ -11,6 +11,9 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
+The PDF renderer now uses ReportLab, so `pip install -r requirements.txt` is sufficient—no extra OS-level packages or binaries
+are required.
+
 Then call the API:
 
 ```bash
