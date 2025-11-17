@@ -8,6 +8,7 @@ from typing import Any, Iterable, List, Mapping
 import httpx
 
 from ...schemas import ProviderDataset, ReportSpec, WeatherDataPoint
+from ..logging import RequestContext
 from .base import (
     BaseProviderClient,
     ProviderConfigurationError,
@@ -23,7 +24,7 @@ DEFAULT_ENDPOINT = "https://api.satsource.example/v1/reports"
 class SatSourceProvider(BaseProviderClient):
     """Client that POSTs report specs to the SatSource ingestion endpoint."""
 
-    def build_payload(self, spec: ReportSpec) -> Mapping[str, Any]:
+    def build_payload(self, spec: ReportSpec, context: RequestContext | None = None) -> Mapping[str, Any]:
         region_ids = self._resolve_region_ids(spec)
         max_regions = int(self.config.get("max_region_ids", 5))
         if not region_ids:
@@ -46,43 +47,82 @@ class SatSourceProvider(BaseProviderClient):
         }
         if callback := self.config.get("callback_url"):
             payload["callbackUrl"] = callback
+            if context:
+                context.info(
+                    logger,
+                    "SatSource callback scheduled",
+                    event="provider.callback_scheduled",
+                    callback_url=callback,
+                )
         return payload
 
-    def sign_request(self, payload: Mapping[str, Any]) -> SignedRequest:
+    def sign_request(
+        self,
+        payload: Mapping[str, Any],
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> SignedRequest:
         api_key = self.secrets.get("api_key")
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return SignedRequest(payload=payload, headers=headers)
 
-    async def dispatch(self, request: SignedRequest, spec: ReportSpec) -> Mapping[str, Any]:
+    async def dispatch(
+        self,
+        request: SignedRequest,
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> Mapping[str, Any]:
         url = self.config.get("endpoint", DEFAULT_ENDPOINT)
         timeout = self.config.get("timeout", 20)
         payload_dict = dict(request.payload)
-        logger.info(
-            "sending SatSource request",
-            extra={
-                "provider_id": self.provider_id,
-                "regions": payload_dict.get("regionIds"),
-                "reference_id": spec.reference_id,
-            },
-        )
+        if context:
+            context.info(
+                logger,
+                "sending SatSource request",
+                event="provider.dispatch",
+                regions=payload_dict.get("regionIds"),
+                reference_id=spec.reference_id,
+            )
+        else:
+            logger.info(
+                "sending SatSource request",
+                extra={
+                    "provider_id": self.provider_id,
+                    "regions": payload_dict.get("regionIds"),
+                    "reference_id": spec.reference_id,
+                },
+            )
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload_dict, headers=dict(request.headers or {}))
             response.raise_for_status()
         return response.json()
 
-    def parse_response(self, payload: Mapping[str, Any], spec: ReportSpec) -> ProviderDataset:
+    def parse_response(
+        self,
+        payload: Mapping[str, Any],
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> ProviderDataset:
         dataset_payload = self._extract_dataset_payload(payload)
         if not dataset_payload:
             raise ProviderRequestError("SatSource response did not include dataset content")
         source = dataset_payload.get("source") or payload.get("source") or "sat-source"
         records: Iterable[Mapping[str, Any]] = dataset_payload.get("records") or dataset_payload.get("data") or []
         data_points = [self._parse_record(record) for record in records]
-        logger.info(
-            "SatSource dataset normalized",
-            extra={"provider_id": self.provider_id, "records": len(data_points)},
-        )
+        if context:
+            context.info(
+                logger,
+                "SatSource dataset normalized",
+                event="provider.dataset_parsed",
+                records=len(data_points),
+            )
+        else:
+            logger.info(
+                "SatSource dataset normalized",
+                extra={"provider_id": self.provider_id, "records": len(data_points)},
+            )
         return ProviderDataset(provider_id=self.provider_id, source=source, data=data_points)
 
     def _resolve_region_ids(self, spec: ReportSpec) -> List[str]:
