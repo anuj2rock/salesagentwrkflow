@@ -9,6 +9,7 @@ from .base import (
 from .factory import ProviderClientFactory
 from .open_meteo import OpenMeteoProvider
 from .sat_source import SatSourceProvider
+from .sat_source_spec import build_sat_source_provider_spec, sat_source_provider_spec_payload
 
 __all__ = [
     "BaseProviderClient",
@@ -19,4 +20,6 @@ __all__ = [
     "SignedRequest",
     "OpenMeteoProvider",
     "SatSourceProvider",
+    "build_sat_source_provider_spec",
+    "sat_source_provider_spec_payload",
 ]
