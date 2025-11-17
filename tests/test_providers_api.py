@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.provider_registry import provider_registry
+from app.services.providers.sat_source_spec import sat_source_provider_spec_payload
 
 client = TestClient(app)
 
@@ -11,38 +12,9 @@ def setup_function(_) -> None:
 
 
 def _provider_payload(provider_id: str = "sat-source") -> dict:
-    return {
-        "provider_id": provider_id,
-        "name": "SatSource",
-        "version": "2023.10",
-        "base_url": "https://api.satsource.example.com",
-        "auth": {
-            "header_name": "Authorization",
-            "header_value_template": "Bearer {{api_key}}",
-            "secrets": {"api_key": "super-secret-key"},
-        },
-        "endpoints": [
-            {
-                "name": "Submit task",
-                "method": "POST",
-                "path": "/v1/tasks",
-                "description": "Create a new sat task",
-                "query_parameters": [],
-                "body_parameters": [
-                    {"name": "region", "type": "string", "required": True},
-                    {"name": "start_date", "type": "string", "required": True},
-                ],
-            }
-        ],
-        "callbacks": [
-            {
-                "event": "task.completed",
-                "url_template": "https://agent.example.com/callback/{task_id}",
-                "payload_fields": ["task_id", "status"],
-                "description": "Called when a task is completed",
-            }
-        ],
-    }
+    payload = sat_source_provider_spec_payload(api_key="super-secret-key")
+    payload["provider_id"] = provider_id
+    return payload
 
 
 def test_register_provider_masks_secrets() -> None:
