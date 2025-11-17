@@ -8,6 +8,7 @@ from typing import Any, List, Mapping
 import httpx
 
 from ...schemas import ProviderDataset, ReportSpec, WeatherDataPoint
+from ..logging import RequestContext
 from .base import BaseProviderClient, ProviderRequestError, SignedRequest
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class OpenMeteoProvider(BaseProviderClient):
         "precipitation_probability": "precipitation_probability_mean",
     }
 
-    def build_payload(self, spec: ReportSpec) -> Mapping[str, str | float]:
+    def build_payload(self, spec: ReportSpec, context: RequestContext | None = None) -> Mapping[str, str | float]:
         daily_params = [self.METRIC_MAP[m] for m in spec.metrics if m in self.METRIC_MAP]
         if not daily_params:
             raise ProviderRequestError("No supported metrics requested for Open-Meteo")
@@ -40,28 +41,53 @@ class OpenMeteoProvider(BaseProviderClient):
             params["temperature_unit"] = "fahrenheit"
         return params
 
-    def sign_request(self, payload: Mapping[str, str | float]) -> SignedRequest:
+    def sign_request(
+        self,
+        payload: Mapping[str, str | float],
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> SignedRequest:
         # Open-Meteo does not require authentication.
         return SignedRequest(payload=payload)
 
-    async def dispatch(self, request: SignedRequest, spec: ReportSpec) -> Mapping[str, Any]:  # type: ignore[override]
+    async def dispatch(
+        self,
+        request: SignedRequest,
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> Mapping[str, Any]:  # type: ignore[override]
         url = self.config.get("weather_url", DEFAULT_WEATHER_URL)
         timeout = self.config.get("timeout", 15)
-        logger.info(
-            "fetching weather data",
-            extra={
-                "provider_id": self.provider_id,
-                "location": spec.location.name,
-                "start": spec.timeframe.start.isoformat(),
-                "end": spec.timeframe.end.isoformat(),
-            },
-        )
+        if context:
+            context.info(
+                logger,
+                "fetching weather data",
+                event="provider.dispatch",
+                location=spec.location.name,
+                start=spec.timeframe.start.isoformat(),
+                end=spec.timeframe.end.isoformat(),
+            )
+        else:
+            logger.info(
+                "fetching weather data",
+                extra={
+                    "provider_id": self.provider_id,
+                    "location": spec.location.name,
+                    "start": spec.timeframe.start.isoformat(),
+                    "end": spec.timeframe.end.isoformat(),
+                },
+            )
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url, params=dict(request.payload))
             response.raise_for_status()
         return response.json()
 
-    def parse_response(self, payload: Mapping[str, Any], spec: ReportSpec) -> ProviderDataset:  # type: ignore[override]
+    def parse_response(
+        self,
+        payload: Mapping[str, Any],
+        spec: ReportSpec,
+        context: RequestContext | None = None,
+    ) -> ProviderDataset:  # type: ignore[override]
         daily = payload.get("daily", {}) if isinstance(payload, Mapping) else {}
         dates = [date.fromisoformat(day) for day in daily.get("time", [])]
         data_points: List[WeatherDataPoint] = []
@@ -77,8 +103,17 @@ class OpenMeteoProvider(BaseProviderClient):
                 precip = daily.get("precipitation_probability_mean", [])
                 record.precipitation_probability = precip[idx] if idx < len(precip) else None
             data_points.append(record)
-        logger.info(
-            "weather data parsed",
-            extra={"provider_id": self.provider_id, "location": spec.location.name, "days": len(data_points)},
-        )
+        if context:
+            context.info(
+                logger,
+                "weather data parsed",
+                event="provider.dataset_parsed",
+                location=spec.location.name,
+                days=len(data_points),
+            )
+        else:
+            logger.info(
+                "weather data parsed",
+                extra={"provider_id": self.provider_id, "location": spec.location.name, "days": len(data_points)},
+            )
         return ProviderDataset(provider_id=self.provider_id, source="open-meteo", data=data_points)

@@ -8,6 +8,7 @@ from typing import Any, Dict
 from ..config import get_settings
 from ..schemas import Narrative, WeatherDataset
 from .llm_client import LLMClient, extract_message_content
+from .logging import RequestContext
 
 
 logger = logging.getLogger(__name__)
@@ -41,14 +42,30 @@ class NarrativeService:
         self._model = settings.llm_model_narrative
         self._llm_client = llm_client or LLMClient(settings=settings)
 
-    async def generate(self, dataset: WeatherDataset, tone: str = "business") -> Narrative:
+    async def generate(self, dataset: WeatherDataset, tone: str = "business", context: RequestContext | None = None) -> Narrative:
         if not self._llm_client.is_configured:
-            logger.info("LLM narrative disabled; using fallback summary")
+            if context:
+                context.info(
+                    logger,
+                    "LLM narrative disabled; using fallback summary",
+                    event="narrative.fallback",
+                    reason="llm_disabled",
+                )
+            else:
+                logger.info("LLM narrative disabled; using fallback summary")
             return _fallback_summary(dataset)
 
         stats = self._summarize_dataset(dataset)
         if not stats:
-            logger.warning("Narrative skipped due to empty dataset")
+            if context:
+                context.warning(
+                    logger,
+                    "Narrative skipped due to empty dataset",
+                    event="narrative.fallback",
+                    reason="empty_dataset",
+                )
+            else:
+                logger.warning("Narrative skipped due to empty dataset")
             return _fallback_summary(dataset)
 
         messages = [
@@ -66,15 +83,30 @@ class NarrativeService:
         ]
 
         try:
-            logger.info("calling LLM for narrative", extra={"model": self._model})
+            if context:
+                context.info(logger, "calling LLM for narrative", event="narrative.llm.request", model=self._model)
+            else:
+                logger.info("calling LLM for narrative", extra={"model": self._model})
             response = await self._llm_client.chat(messages=messages, model=self._model)
             content = extract_message_content(response).strip()
             if not content:
                 raise ValueError("Empty LLM narrative")
-            logger.debug("narrative generated", extra={"length": len(content)})
+            if context:
+                context.debug(logger, "narrative generated via LLM", event="narrative.llm.response", length=len(content))
+            else:
+                logger.debug("narrative generated", extra={"length": len(content)})
             return Narrative(title="Weather outlook", summary=content)
         except Exception:  # pragma: no cover - depends on external API
-            logger.warning("LLM narrative failed; returning fallback", exc_info=True)
+            if context:
+                context.warning(
+                    logger,
+                    "LLM narrative failed; returning fallback",
+                    event="narrative.fallback",
+                    reason="llm_error",
+                    exc_info=True,
+                )
+            else:
+                logger.warning("LLM narrative failed; returning fallback", exc_info=True)
             return _fallback_summary(dataset)
 
     def _summarize_dataset(self, dataset: WeatherDataset) -> Dict[str, Any]:

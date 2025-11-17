@@ -40,3 +40,30 @@ The backend can call Hugging Face's router to interpret prompts and author narra
    ```
 
 3. Start Uvicorn as shown above. When no token is provided the service gracefully falls back to the rule-based interpreter and summary generator.
+
+## Observability and request logs
+
+Every `/api/weather-report` call is wrapped in a `RequestContext` (`app/services/logging.py`). The context assigns a `request_id`,
+captures the active `interpreter` and `provider_id`, tracks any downstream request IDs, and injects those identifiers into the
+`extra` payload for each `logging` call. All milestone entries also receive an `event` field so dashboards can group related
+transitions consistently. The in-memory `request_log_store` keeps the enriched log events so developers can query them via
+`GET /api/requests/{request_id}/logs` (handy when debugging asynchronous flows like SatSource callbacks).
+
+| Event | Level | Purpose |
+| --- | --- | --- |
+| `spec.ingestion`, `spec.normalized` | INFO | Prompt received and normalized into a provider spec. |
+| `interpreter.choice`, `interpreter.llm.request`, `interpreter.fallback` | INFO/WARN | Interpreter selection, LLM round-trips, and fallback reasons. |
+| `provider.request_built`, `provider.dispatch`, `provider.response_received`, `provider.dataset_parsed` | INFO | Provider payload lifecycle and HTTP response handling. |
+| `provider.callback_scheduled` | INFO | Downstream callbacks registered (e.g., SatSource webhooks). |
+| `narrative.llm.request`, `narrative.fallback` | INFO/WARN | Narrative generation attempts and fallbacks. |
+| `pdf.render_start`, `pdf.render_success`, `pdf.render_failed` | INFO/ERROR | PDF rendering lifecycle. |
+
+Each log entry therefore includes at least:
+
+- `request_id`: The UUID assigned by `RequestContext`.
+- `provider_id`: Set once a provider is selected.
+- `interpreter`: Name of the interpreter class serving the request.
+- `downstream_request_ids`: Map of provider IDs to their reference IDs (useful when chasing callbacks).
+- `event`: Stable taxonomy token so external systems can filter/aggregate log lines without parsing free-form text.
+
+Future providers can reuse these semantics to ensure their own milestones show up in the same timeline.

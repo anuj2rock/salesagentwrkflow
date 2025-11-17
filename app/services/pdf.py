@@ -12,6 +12,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from ..schemas import WeatherReportPayload
+from .logging import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,17 @@ def _build_table(payload: WeatherReportPayload) -> Table:
     return table
 
 
-def render_pdf(payload: WeatherReportPayload) -> bytes:
+def render_pdf(payload: WeatherReportPayload, context: RequestContext | None = None) -> bytes:
     location_name = payload.request.location.name
-    logger.info("rendering weather report pdf", extra={"location": location_name})
+    if context:
+        context.info(
+            logger,
+            "rendering weather report pdf",
+            event="pdf.render_start",
+            location=location_name,
+        )
+    else:
+        logger.info("rendering weather report pdf", extra={"location": location_name})
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -112,10 +121,22 @@ def render_pdf(payload: WeatherReportPayload) -> bytes:
         doc.build(story)
         pdf_bytes = buffer.getvalue()
     except Exception:
-        logger.exception("pdf render failed", extra={"location": location_name})
+        if context:
+            context.exception(logger, "pdf render failed", event="pdf.render_failed", location=location_name)
+        else:
+            logger.exception("pdf render failed", extra={"location": location_name})
         raise
     finally:
         buffer.close()
 
-    logger.info("pdf render complete", extra={"location": location_name, "bytes": len(pdf_bytes)})
+    if context:
+        context.info(
+            logger,
+            "pdf render complete",
+            event="pdf.render_success",
+            location=location_name,
+            bytes=len(pdf_bytes),
+        )
+    else:
+        logger.info("pdf render complete", extra={"location": location_name, "bytes": len(pdf_bytes)})
     return pdf_bytes

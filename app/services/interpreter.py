@@ -10,6 +10,7 @@ from typing import List
 from ..config import get_settings
 from ..schemas import Location, ReportSpec, Timeframe
 from .llm_client import LLMClient, extract_message_content, parse_json_from_content
+from .logging import RequestContext
 from .weather_api import GeocodingService
 
 
@@ -52,9 +53,17 @@ class RuleBasedPromptInterpreter:
     def __init__(self, geocoder: GeocodingService | None = None) -> None:
         self._geocoder = geocoder or GeocodingService()
 
-    async def interpret(self, prompt: str) -> ReportSpec:
+    async def interpret(self, prompt: str, context: RequestContext | None = None) -> ReportSpec:
         location_name = self._extract_location(prompt) or "New York City, USA"
-        logger.debug("rule-based interpreter extracting location", extra={"location_hint": location_name})
+        if context:
+            context.debug(
+                logger,
+                "rule-based interpreter extracting location",
+                event="interpreter.rule_based.location",
+                location_hint=location_name,
+            )
+        else:
+            logger.debug("rule-based interpreter extracting location", extra={"location_hint": location_name})
         coordinates = await self._geocoder.geocode(location_name)
 
         timeframe = self._extract_timeframe(prompt)
@@ -62,6 +71,14 @@ class RuleBasedPromptInterpreter:
         units = "imperial" if re.search(r"\b(fahrenheit|imperial)\b", prompt, re.I) else "metric"
         tone = "casual" if "casual" in prompt.lower() else "business"
 
+        if context:
+            context.info(
+                logger,
+                "rule-based interpreter completed",
+                event="interpreter.rule_based.completed",
+                location=coordinates.name,
+                timeframe=f"{timeframe.start}->{timeframe.end}",
+            )
         return ReportSpec(
             location=Location(name=coordinates.name, latitude=coordinates.latitude, longitude=coordinates.longitude),
             timeframe=timeframe,
@@ -139,13 +156,16 @@ class LLMInterpreter:
         self._geocoder = geocoder or GeocodingService()
         self._fallback = fallback or RuleBasedPromptInterpreter(self._geocoder)
 
-    async def interpret(self, prompt: str) -> ReportSpec:
+    async def interpret(self, prompt: str, context: RequestContext | None = None) -> ReportSpec:
         if not self._llm_client.is_configured:
+            if context:
+                context.info(logger, "LLM interpreter not configured; using fallback", event="interpreter.fallback", reason="llm_disabled")
+                return await self._fallback.interpret(prompt, context=context)
             logger.info("LLM interpreter not configured; using fallback")
             return await self._fallback.interpret(prompt)
 
         try:
-            spec_dict = await self._call_model(prompt)
+            spec_dict = await self._call_model(prompt, context=context)
             location_block = spec_dict.setdefault("location", {})
             if not location_block.get("name"):
                 raise ValueError("Location name missing")
@@ -155,12 +175,15 @@ class LLMInterpreter:
                 location_block["longitude"] = coordinates.longitude
             spec = ReportSpec.model_validate(spec_dict)
         except Exception:  # pragma: no cover - depends on external API
+            if context:
+                context.warning(logger, "LLM interpreter failed; falling back", event="interpreter.fallback", reason="llm_error", exc_info=True)
+                return await self._fallback.interpret(prompt, context=context)
             logger.warning("LLM interpreter failed; falling back", exc_info=True)
             # Fall back to deterministic heuristics if the LLM output is invalid
             return await self._fallback.interpret(prompt)
         return spec
 
-    async def _call_model(self, prompt: str) -> dict:
+    async def _call_model(self, prompt: str, context: RequestContext | None = None) -> dict:
         schema = {
             "location": {
                 "name": "string",
@@ -182,10 +205,16 @@ class LLMInterpreter:
             },
             {"role": "user", "content": prompt},
         ]
-        logger.info("calling LLM for prompt interpretation", extra={"model": self._model})
+        if context:
+            context.info(logger, "calling LLM for prompt interpretation", event="interpreter.llm.request", model=self._model)
+        else:
+            logger.info("calling LLM for prompt interpretation", extra={"model": self._model})
         response = await self._llm_client.chat(messages=messages, model=self._model)
         content = extract_message_content(response)
-        logger.debug("LLM interpreter raw content received", extra={"length": len(content)})
+        if context:
+            context.debug(logger, "LLM interpreter raw content received", event="interpreter.llm.response", length=len(content))
+        else:
+            logger.debug("LLM interpreter raw content received", extra={"length": len(content)})
         return parse_json_from_content(content)
 
 
